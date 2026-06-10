@@ -5,16 +5,37 @@
 
 import pandas as pd
 import numpy as np
-from statsmodels.tsa.regime_switching.markov_regression import MarkovRegression
+from statsmodels.tsa.regime_switching.markov_regression import (
+    MarkovRegression)
+
+
+# ── Régimes VIX ──────────────────────────────────────
+
+REGIME_CONFIG = {
+    'Stable' : {
+        'color'     : '#00C851',
+        'bg'        : '#0d2b1a',
+        'emoji'     : '🟢',
+        'vix_label' : 'VIX < 20',
+    },
+    'Stress' : {
+        'color'     : '#ffbb33',
+        'bg'        : '#2b2400',
+        'emoji'     : '🟡',
+        'vix_label' : '20 ≤ VIX < 30',
+    },
+    'Crise'  : {
+        'color'     : '#ff4444',
+        'bg'        : '#2b0d0d',
+        'emoji'     : '🔴',
+        'vix_label' : 'VIX ≥ 30',
+    },
+}
 
 
 def get_regime_vix(vix_val: float) -> str:
     """
-    Définit le régime de marché selon le VIX
-
-    Parameters
-    ----------
-    vix_val : float — valeur du VIX
+    Identifie le régime selon le VIX
 
     Returns
     -------
@@ -28,29 +49,29 @@ def get_regime_vix(vix_val: float) -> str:
         return 'Crise'
 
 
-def compute_vix_regimes(data: pd.DataFrame) -> pd.DataFrame:
+def compute_vix_regimes(
+        data: pd.DataFrame) -> pd.DataFrame:
     """
     Calcule les régimes VIX sur toute la période
 
     Returns
     -------
-    pd.DataFrame avec colonnes :
-        regime_vix, regime_color
+    pd.DataFrame :
+        regime, color, emoji
     """
-    regime_colors = {
-        'Stable' : '#00C851',
-        'Stress' : '#ffbb33',
-        'Crise'  : '#ff4444',
-    }
-
     df = pd.DataFrame(index=data.index)
-    df['regime_vix'] = data['vix'].apply(
+    df['regime'] = data['vix'].apply(
         get_regime_vix)
-    df['regime_color'] = df['regime_vix'].map(
-        regime_colors)
-
+    df['color']  = df['regime'].map(
+        {k: v['color']
+         for k, v in REGIME_CONFIG.items()})
+    df['emoji']  = df['regime'].map(
+        {k: v['emoji']
+         for k, v in REGIME_CONFIG.items()})
     return df
 
+
+# ── Markov Switching ─────────────────────────────────
 
 def compute_markov_regimes(
         returns: pd.Series,
@@ -60,52 +81,52 @@ def compute_markov_regimes(
 
     Parameters
     ----------
-    returns   : pd.Series — rendements journaliers
-    k_regimes : int — nombre de régimes (défaut 3)
+    returns   : pd.Series — rendements
+    k_regimes : int — nombre de régimes
 
     Returns
     -------
-    dict avec :
-        - smoothed_probs : probabilités lissées
-        - regime_labels  : labels des régimes
-        - params         : paramètres du modèle
-        - transition     : matrice de transition
-        - aic            : critère AIC
+    dict :
+        smoothed_probs, regime_labels,
+        params, transition, aic, success
     """
     try:
         ret_pct = returns.dropna() * 100
 
-        # Estimation
         mod = MarkovRegression(
             ret_pct,
             k_regimes=k_regimes,
             trend='c',
-            switching_variance=True
-        )
+            switching_variance=True)
         res = mod.fit(disp=False)
 
-        # Extraction paramètres
+        # Paramètres par régime
         params = []
         for i in range(k_regimes):
-            mu    = float(res.params[f'const[{i}]'])
+            mu    = float(
+                res.params[f'const[{i}]'])
             sigma = float(np.sqrt(
                 res.params[f'sigma2[{i}]']))
             params.append({
                 'regime' : i,
-                'mu'     : mu,
-                'sigma'  : sigma,
+                'mu'     : round(mu, 4),
+                'sigma'  : round(sigma, 4),
             })
 
-        # Trier par volatilité croissante
+        # Tri par volatilité croissante
         params_sorted = sorted(
-            params, key=lambda x: x['sigma'])
+            params,
+            key=lambda x: x['sigma'])
 
         # Labels selon ordre de volatilité
+        label_names  = [
+            'Stable', 'Stress', 'Crise']
+        label_colors = [
+            '#00C851', '#ffbb33', '#ff4444']
         regime_labels = {}
-        label_names   = ['Stable', 'Stress', 'Crise']
-        label_colors  = ['#00C851', '#ffbb33', '#ff4444']
 
-        for rank, p in enumerate(params_sorted):
+        for rank, p in enumerate(
+                params_sorted):
             regime_labels[p['regime']] = {
                 'name'  : label_names[rank],
                 'color' : label_colors[rank],
@@ -115,23 +136,28 @@ def compute_markov_regimes(
 
         # Matrice de transition
         trans = res.regime_transition
-        k     = res.k_regimes
         transition_data = {}
-        for i in range(k):
+        for i in range(k_regimes):
             p_ii  = float(trans[i, i])
-            duree = 1 / (1 - p_ii)
+            duree = 1 / (1 - p_ii) \
+                    if p_ii < 1 else 999
             transition_data[i] = {
                 'p_ii' : round(p_ii, 4),
                 'duree': round(duree, 1),
+                'label': regime_labels[
+                    i]['name'],
             }
 
         return {
-            'smoothed_probs' : res.smoothed_marginal_probabilities,
+            'smoothed_probs' : res\
+                .smoothed_marginal_probabilities,
             'regime_labels'  : regime_labels,
             'params'         : params_sorted,
             'transition'     : transition_data,
-            'aic'            : res.aic,
-            'bic'            : res.bic,
+            'aic'            : round(
+                res.aic, 2),
+            'bic'            : round(
+                res.bic, 2),
             'k_regimes'      : k_regimes,
             'success'        : True,
         }
@@ -143,20 +169,22 @@ def compute_markov_regimes(
         }
 
 
+# ── Stats FCI par régime ─────────────────────────────
+
 def get_regime_stats(
         data: pd.DataFrame,
         fci_series: pd.Series) -> pd.DataFrame:
     """
-    Calcule les statistiques du FCI par régime
+    Calcule les statistiques FCI par régime VIX
 
     Parameters
     ----------
-    data       : pd.DataFrame — données complètes
+    data       : pd.DataFrame
     fci_series : pd.Series — FCI rolling
 
     Returns
     -------
-    pd.DataFrame avec stats par régime
+    pd.DataFrame : stats par régime
     """
     vix_aligned    = data['vix'].reindex(
         fci_series.index)
@@ -164,13 +192,7 @@ def get_regime_stats(
         get_regime_vix)
 
     rows = []
-    colors = {
-        'Stable' : '#00C851',
-        'Stress' : '#ffbb33',
-        'Crise'  : '#ff4444',
-    }
-
-    for regime in ['Stable', 'Stress', 'Crise']:
+    for regime, config in REGIME_CONFIG.items():
         mask    = regime_aligned == regime
         fci_sub = fci_series[mask]
         vix_sub = vix_aligned[mask]
@@ -178,12 +200,80 @@ def get_regime_stats(
         if len(fci_sub) > 0:
             rows.append({
                 'Régime'    : regime,
+                'Emoji'     : config['emoji'],
                 'Obs'       : len(fci_sub),
-                'FCI moyen' : round(fci_sub.mean(), 4),
-                'FCI min'   : round(fci_sub.min(), 4),
-                'FCI max'   : round(fci_sub.max(), 4),
-                'VIX moyen' : round(vix_sub.mean(), 2),
-                'color'     : colors[regime],
+                'Pct'       : round(
+                    len(fci_sub) /
+                    len(fci_series) * 100, 1),
+                'FCI moyen' : round(
+                    fci_sub.mean(), 4),
+                'FCI min'   : round(
+                    fci_sub.min(), 4),
+                'FCI max'   : round(
+                    fci_sub.max(), 4),
+                'FCI std'   : round(
+                    fci_sub.std(), 4),
+                'VIX moyen' : round(
+                    vix_sub.mean(), 2),
+                'color'     : config['color'],
+                'bg'        : config['bg'],
             })
 
     return pd.DataFrame(rows)
+
+
+# ── Corrélation VIX vs Markov ────────────────────────
+
+def compare_regimes(
+        data: pd.DataFrame,
+        markov_result: dict) -> dict:
+    """
+    Compare les régimes VIX et Markov
+
+    Returns
+    -------
+    dict : correlation, agreement_rate
+    """
+    if not markov_result.get('success'):
+        return {'success': False}
+
+    try:
+        # Régimes VIX numériques
+        vix_num = data['vix'].apply(
+            lambda x: 0 if x < 20
+            else 1 if x < 30 else 2)
+
+        # Régimes Markov
+        probs  = markov_result[
+            'smoothed_probs']
+        labels = markov_result['regime_labels']
+
+        # Mapper vers ordre stable/stress/crise
+        markov_num = pd.Series(
+            probs.values.argmax(axis=1),
+            index=data.index)
+
+        # Aligner
+        common   = vix_num.index.intersection(
+            markov_num.index)
+        vix_a    = vix_num[common]
+        markov_a = markov_num[common]
+
+        corr = float(np.corrcoef(
+            vix_a, markov_a)[0, 1])
+
+        agreement = float(
+            (vix_a == markov_a).mean())
+
+        return {
+            'correlation'   : round(corr, 4),
+            'agreement_rate': round(
+                agreement * 100, 1),
+            'success'       : True,
+        }
+
+    except Exception as e:
+        return {
+            'success': False,
+            'error'  : str(e),
+        }
